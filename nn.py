@@ -1,12 +1,13 @@
 import cupy as cp
 import numpy as np 
 import math 
+import os
 
 
 class Operation: 
     def forward(self,x):
         raise NotImplementedError
-    def bacward(self,grad):
+    def backward(self,grad):
         raise NotImplementedError
     
 class GradTensor:
@@ -34,12 +35,12 @@ class GradLayer:
 
 class Linear(GradLayer):
     
-    def __init__(self,in_features,out_features,bias):
+    def __init__(self,in_features,out_features,bias=True):
         self.in_features = in_features
         self.out_features = out_features
         self.weight = GradTensor(cp.random.normal(scale=0.2,size=(in_features,out_features),dtype=cp.float32))
         if bias:
-            self.bias = GradTensor(cp.zeros(size=(out_features,),dtype=cp.float32))
+            self.bias = GradTensor(cp.zeros((out_features,), dtype=cp.float32))
         else:
             self.bias = None
             
@@ -114,7 +115,7 @@ class Embedding(GradLayer):
         return self.embedding.params[x]
     
     def backward(self,grad_output):
-        self.embedding.grad += cp.scatter_add(self.embedding.grad,self.x,grad_output)
+        cp.add.at(self.embedding.grad, self.x, grad_output)
         return None
 
 class MSELoss(Operation):
@@ -126,7 +127,7 @@ class MSELoss(Operation):
     def backward(self,grad_output):
         return 2 * (self.y_pred - self.y_true) / self.y_pred.shape[0]
 
-class PositionalEmbeddings(GradTensor):
+class PositionalEmbeddings(GradLayer):
 
     def __init__(self,max_len,embed_dim):
         self.max_len = max_len
@@ -204,7 +205,7 @@ class MultiHeadAttention(GradLayer):
         self.k_linear = Linear(self.embed_dim, self.embed_dim)
         self.v_linear = Linear(self.embed_dim, self.embed_dim)
         self.out_linear = Linear(self.embed_dim, self.embed_dim)
-        self.softmax = SoftMax()
+        self.softmax = SoftmaxOperation()
 
     def forward(self, x, attention_mask=None):
         """
@@ -271,7 +272,7 @@ class MultiHeadAttention(GradLayer):
         
         ### Backward through attn = probs @ v ###
         ### If Y = XW, dL/dW = X^T(dL/dY) and dL/dX = (dL/dY)W^T ###
-        ### This was how our linear layer worked, the same idea applied here! ###
+        ### This was how our linear layer worked, the same idea applied here ###
         grad_probs = cp.matmul(grad_attn, self.v.transpose(0, 1, 3, 2))
         grad_v = cp.matmul(self.probs.transpose(0, 1, 3, 2), grad_attn)
         
@@ -320,9 +321,9 @@ class MultiHeadAttention(GradLayer):
 
 class FFN(GradLayer):
     def __init__(self, embed_dim, dim_feedforward):
-        self.linear1 = Linear(embed_dim, embed_dim * dim_feedforward    )
+        self.linear1 = Linear(embed_dim, embed_dim * dim_feedforward)
         self.linear2 = Linear(embed_dim * dim_feedforward, embed_dim)
-        self.relu = ReLU()
+        self.relu = ReluOperation()
 
     def forward(self, x):
         batch_size, seq_len, embed_dim = x.shape
@@ -362,7 +363,7 @@ class Dropout(Operation):
 
     def backward(self, output_grad):
         if self.training:
-            return output_grad * self.mask
+            return output_grad * self.mask 
         else:
             return output_grad
         
@@ -498,12 +499,27 @@ class CrossEntropyLoss(Operation):
         grad = self.probs.copy()
         # subtract 1 at the correct class index
         grad[cp.arange(batch_size), self.y_true] -= 1
-     
-        return grad
+
+        return grad / batch_size
+
+    
     
     def __repr__(self):
         return "CrossEntropyLoss()"
         
+
+class FlattenForLLM(Operation):
+    def forward(self, x):
+        self.input_shape = x.shape
+        batch_size, seq_len, embed_dim = self.input_shape
+        return x.reshape(batch_size*seq_len, embed_dim)
+
+    def backward(self, grad_output):
+        return grad_output.reshape(self.input_shape)
+
+    def __repr__(self):
+        return "FlattenForLLM()"
+
 
 class NeuralNetwork:
     """
@@ -529,6 +545,7 @@ class NeuralNetwork:
     def backward(self, output_grad):
         for layer in reversed(self.layers):
             output_grad = layer.backward(output_grad)
+        return output_grad
 
     def parameters(self):
         params = []
