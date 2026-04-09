@@ -1,7 +1,14 @@
 import cupy as cp
-import numpy as np 
-import math 
+import numpy as np
+import math
 import os
+
+##### QUICK ENABLE FOR TENSOR CORE OPS (for cupy only) ###
+device = cp.cuda.Device()
+cc_major, cc_minor = device.compute_capability
+if int(cc_major) >= 8:
+    os.environ["CUPY_TF32"] = "1"
+##########################################
 
 
 class Operation: 
@@ -14,10 +21,12 @@ class GradTensor:
     def __init__(self,params):
         self.params = params
         self.shape = params.shape
-        self.grad = cp.zeros_like(params)
+        with cp.cuda.Device(params.device):
+            self.grad = cp.zeros_like(params)
 
     def _zero_grad(self):
-        self.grad = cp.zeros_like(self.params)
+        with cp.cuda.Device(self.params.device):
+            self.grad = cp.zeros_like(self.params)
 
     
 class GradLayer:
@@ -38,7 +47,7 @@ class Linear(GradLayer):
     def __init__(self,in_features,out_features,bias=True):
         self.in_features = in_features
         self.out_features = out_features
-        self.weight = GradTensor(cp.random.normal(scale=0.2,size=(in_features,out_features),dtype=cp.float32))
+        self.weight = GradTensor(cp.random.normal(scale=0.02,size=(in_features,out_features),dtype=cp.float32))
         if bias:
             self.bias = GradTensor(cp.zeros((out_features,), dtype=cp.float32))
         else:
@@ -108,7 +117,7 @@ class Embedding(GradLayer):
     def __init__(self,vocab_size,embed_dim):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
-        self.embedding = GradTensor(cp.random.normal(scale=0.2,size=(vocab_size,embed_dim),dtype=cp.float32))
+        self.embedding = GradTensor(cp.random.normal(scale=0.02,size=(vocab_size,embed_dim),dtype=cp.float32))
 
     def forward(self,x):
         self.x = x
@@ -132,7 +141,7 @@ class PositionalEmbeddings(GradLayer):
     def __init__(self,max_len,embed_dim):
         self.max_len = max_len
         self.embed_dim = embed_dim  
-        self.weight = GradTensor(cp.random.normal(scale=0.2,size=(max_len,embed_dim),dtype=cp.float32))
+        self.weight = GradTensor(cp.random.normal(scale=0.02,size=(max_len,embed_dim),dtype=cp.float32))
 
     def forward(self,x):
         self.seq_len = x.shape[1]
@@ -141,7 +150,6 @@ class PositionalEmbeddings(GradLayer):
         return x + self.weight.params[:self.seq_len][None,:,:]
 
     def backward(self,grad_output):
-        self.weight.grad = cp.zeros_like(self.weight.params)
         cp.add.at(self.weight.grad, cp.arange(self.seq_len), grad_output.sum(axis=0))
         return grad_output
 
@@ -177,8 +185,8 @@ class LayerNorm(GradLayer):
     def backward(self, output_grad):
 
         # Gradient w.r.t gamma and beta (affine transform)
-        self.gamma.grad = cp.sum(output_grad * self.x_hat, axis=(0, 1))
-        self.beta.grad  = cp.sum(output_grad, axis=(0, 1))              
+        self.gamma.grad += cp.sum(output_grad * self.x_hat, axis=(0, 1))
+        self.beta.grad  += cp.sum(output_grad, axis=(0, 1))              
 
         # Gradient w.r.t normalized input
         dx_hat = output_grad * self.gamma.params  # (B, S, E)
@@ -501,6 +509,7 @@ class CrossEntropyLoss(Operation):
         grad[cp.arange(batch_size), self.y_true] -= 1
 
         return grad / batch_size
+
 
     
     

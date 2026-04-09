@@ -15,7 +15,7 @@ def get_gpt2(config):
 
     model = nn.NeuralNetwork()
     model.add(nn.Embedding(vocab_size=config.vocab_size, embed_dim=config.embed_dim))
-    model.add(nn.PositionalEmbeddings(max_seq_len=config.max_seq_len, embed_dim=config.embed_dim))
+    model.add(nn.PositionalEmbeddings(max_len=config.max_seq_len, embed_dim=config.embed_dim))
 
     for _ in range(config.num_layers):
         model.add(nn.TransformerBlock(embed_dim=config.embed_dim, 
