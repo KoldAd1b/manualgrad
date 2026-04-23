@@ -2,3 +2,5 @@ venv/
 __pycache__/
 *.pyc
 nn2.py
+*.pkl
+*.npz
